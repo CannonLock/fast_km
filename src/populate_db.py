@@ -3,21 +3,17 @@ import os
 import ftplib
 import json
 import time
-import requests
 from src.documents.xml_parsing import read_xml_content, parse_xml_content
+from src.documents.corpus_ops import add_or_update_corpus_docs, get_corpus_doc_origins, AddDocumentsParams, DocumentModel
+from src.indexing.index import Index
+import src.global_vars as gvars
 
-port = 8000
-km_url = 'http://localhost:' + str(port) + '/api/kinderminer'
-hyp_eval_url = 'http://localhost:' + str(port) + '/api/hypothesis_eval'
-indexing_url = 'http://localhost:' + str(port) + '/api/index'
-doc_url = 'http://localhost:' + str(port) + '/api/documents'
 icite_folder = './_icite'
 xml_folder = "./_xml"
 
-def main():
+def populate_db(max_files=sys.maxsize):
     # figure out what to download
-    max_files = sys.maxsize
-    response = requests.get(doc_url + "/origins").json()
+    response = get_corpus_doc_origins()
     already_downloaded = response['result']
     files_to_download = _get_files_to_download(already_downloaded, max_files)
     print(f"N Files to download: {len(files_to_download)}")
@@ -29,10 +25,10 @@ def main():
         remote_filename = file[1]
         xml_content = _download_xml(ftp_dir, remote_filename, xml_folder)
         docs = parse_xml_content(xml_content, remote_filename)
-        payload = {"documents": [doc.to_dict() for doc in docs]}
-
-        response = requests.post(doc_url, json=payload).json()
-        print(f"Added {len(payload['documents']):,} documents from {remote_filename}")
+        payload = [doc.to_dict() for doc in docs]
+        params = AddDocumentsParams(documents=[DocumentModel(**doc) for doc in payload])
+        response = add_or_update_corpus_docs(params)
+        print(f"Added {len(payload):,} documents from {remote_filename}")
 
     # add icite citation count data if available
     # icite data can be downloaded from: https://nih.figshare.com/collections/iCite_Database_Snapshots_NIH_Open_Citation_Collection_/4586573
@@ -43,7 +39,7 @@ def main():
         for icite_json in icite_jsons:
             print(f"Processing {icite_json}...")
             json_path = os.path.join(icite_folder, icite_json)
-            payload = {"documents": []}
+            payload = []
             with open(json_path, 'r') as f:
                 for line in f:
                     try:
@@ -51,13 +47,14 @@ def main():
                         pmid = _json['pmid']
                         citation_count = _json.get('citation_count', 0)
                         payload_item = {"pmid": pmid, "citation_count": citation_count}
-                        payload["documents"].append(payload_item)
+                        payload.append(payload_item)
                     except json.JSONDecodeError:
                         print(f"Error decoding JSON from line in {icite_json}: {line}")
 
-            print(f"Adding citation count data for {len(payload['documents']):,} documents from {icite_json}")
-            response = requests.post(doc_url, json=payload).json()
-            
+            print(f"Adding citation count data for {len(payload):,} documents from {icite_json}")
+            params = AddDocumentsParams(documents=[DocumentModel(**doc) for doc in payload])
+            response = add_or_update_corpus_docs(params)
+
             # rename .json file to .json.old to avoid reprocessing
             if response.get('status', '') == 'finished':
                 old_json_path = os.path.join(icite_folder, icite_json + '.old')
@@ -69,16 +66,15 @@ def main():
                 raise ValueError(f"Failed to add citation count data from {icite_json}, API response: {response}")
     else:
         print("No _icite folder found, skipping adding citation count data.")
-    
+
     # index docs
-    response = requests.post(indexing_url, json={}).json()
-    job_id = response['id']
-    while True:
-        response = requests.get(indexing_url + f"?id={job_id}").json()
-        print("Indexing status: ", response)
-        if response['status'] in ['finished', 'failed']:
-            break
-        time.sleep(60)
+    idx = Index(gvars.data_dir)
+    print("Starting indexing...")
+    for progress in idx.index_documents():
+        print(f"Indexing progress: {progress*100:.2f}%")
+        time.sleep(1)  # simulate polling interval
+    print("Indexing finished.")
+    idx.close()
 
 def _connect_to_ftp_server(ftp_dir: str, ftp_address: str = 'ftp.ncbi.nlm.nih.gov') -> ftplib.FTP:
     """Connect to the FTP server and return the FTP object."""
@@ -135,4 +131,4 @@ def _download_xml(ftp_dir: str, remote_filename: str, xml_dir: str) -> str:
     return xml_content
 
 if __name__ == '__main__':
-    main()
+    populate_db()

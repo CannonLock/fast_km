@@ -1,10 +1,12 @@
 import os
 import argparse
 import subprocess
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import src.global_vars as gvars
 
 # load environment variables
@@ -77,8 +79,23 @@ from src.knowledge_graph.knowledge_graph import KnowledgeGraph
 from src.auth.functions import authenticate
 from src.jobs.workers import run_workers
 from src.jobs.job_queue import queue_job, queue_indexing_job, get_job, cancel_job
+from src.populate_db import populate_db
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    # Load in the initial releases
+    populate_db()
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(populate_db, "interval", weeks=1)
+    scheduler.start()
+
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 deprecated_tags = ["deprecated endpoints"]
 km_tags = ["kinderminer"]
 hyp_tags = ["hypothesis evaluation"]
@@ -102,6 +119,12 @@ def verify_password(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
     return True
+
+
+@app.get("/health")
+def health_check() -> dict:
+    return {"status": "healthy"}
+
 
 ### Job management endpoints
 @app.post("/api/kinderminer", tags=km_tags)
