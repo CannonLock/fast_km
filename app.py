@@ -1,6 +1,7 @@
 import os
 import argparse
 import subprocess
+import datetime
 from dotenv import load_dotenv
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -87,10 +88,11 @@ from src.populate_kg import populate_kg
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
-    populate_kg()
-
     scheduler = AsyncIOScheduler()
     scheduler.add_job(populate_db, "cron", day_of_week="sat", hour=5, minute=0)
+    # run populate_kg once, shortly after the app starts serving requests
+    run_time = datetime.datetime.now() + datetime.timedelta(seconds=5)
+    scheduler.add_job(populate_kg, "date", run_date=run_time)
     scheduler.start()
 
     yield
